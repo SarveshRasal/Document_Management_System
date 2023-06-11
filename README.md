@@ -1,4 +1,4 @@
-# Document Management System
+#Document Management System
 
 **Objective:** The objective of this project is to develop a web-based integrated platform for the creation, forwarding, rejection/approval of documents and files in electronic format. The platform will have facilities for making sketches and attaching external reference files. It will also have a customization facility to define the file movement procedure and nomination of designated officers/sections.
 

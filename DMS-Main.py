@@ -1,21 +1,26 @@
 from datetime import datetime
 from bson import ObjectId
-from fastapi import FastAPI, HTTPException, status, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, status, UploadFile
 from pathlib import Path
 from pymongo import MongoClient
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import List
 
+# Create a FastAPI instance
 dms = FastAPI()
 
+# Initialize the MongoDB client
 client = MongoClient()
 
+# Connect to the "Document_Management_System" database
 db = client.Document_Management_System
 
+# Get the "user_records" and "documents" collections from the database
 users = db.user_records
 documents = db.documents
 
 
+# Define the Pydantic model for the basic information of a user
 class BasicsOfAUser(BaseModel):
     Name: str
     Designation: str
@@ -24,16 +29,20 @@ class BasicsOfAUser(BaseModel):
     Password: str
 
 
+# Define the Pydantic model for the input payload to add multiple users
 class InputUser(BaseModel):
     List_Of_User: List[BasicsOfAUser]
 
 
+# Define a GET endpoint at the root URL ("/") to list all database names (for testing purposes)
 @dms.get("/")
 def get_everything():
     x = client.list_database_names()
     print(x)
 
 
+#
+# Define a GET endpoint to retrieve all users from the "user_records" collection
 @dms.get("/users/")
 async def get_users():
     users_list = list(users.find())
@@ -42,6 +51,7 @@ async def get_users():
     return {"users": users_list}
 
 
+# Define a POST endpoint to add multiple users to the "user_records" collection
 @dms.post("/users/add", status_code=status.HTTP_201_CREATED)
 def add_users(post: InputUser):
     list_of_user = post.dict()
@@ -50,6 +60,7 @@ def add_users(post: InputUser):
     return post
 
 
+# Define a POST endpoint to upload a file to the server
 @dms.post("/files/upload/")
 async def create_upload_file(file: UploadFile):
     file_path = Path.cwd() / "Documents" / file.filename
@@ -61,6 +72,7 @@ async def create_upload_file(file: UploadFile):
     return {"document_id": str(result.inserted_id), "filename": file.filename}
 
 
+# Define a GET endpoint to retrieve all documents from the "documents" collection
 @dms.get("/files/")
 async def get_files():
     files = list(documents.find())
@@ -69,6 +81,7 @@ async def get_files():
     return {"files": files}
 
 
+# Define a DELETE endpoint to delete a file from the server and the "documents" collection
 @dms.delete("/files/delete/{filename}")
 async def delete_file(filename: str):
     file_path = Path.cwd() / "Documents" / filename
@@ -80,6 +93,7 @@ async def delete_file(filename: str):
         return {"detail": f"{filename} not found"}
 
 
+# Define a POST endpoint to associate a document with a user
 @dms.post("/associate/{document_id}/{user_id}")
 async def associate_document_with_user(document_id: str, user_id: str):
     document = documents.find_one({"_id": ObjectId(document_id)})
@@ -99,13 +113,15 @@ async def associate_document_with_user(document_id: str, user_id: str):
     # Increment the priority number for the new association
     priority = max_priority + 1
 
+    # Update the document to add the new associated user
     documents.update_one({"_id": ObjectId(document_id)},
-                         {"$push": {"associated_users": {"user_id": user_id, "approval_status": False, "priority": priority}}})
+                         {"$push": {
+                             "associated_users": {"user_id": user_id, "approval_status": False, "priority": priority}}})
 
     return {"detail": f"Associated document {document_id} with user {user_id}"}
 
 
-
+# Define a GET endpoint to retrieve all associated users of a document
 @dms.get("/associated_users/{document_id}")
 async def get_associated_users(document_id: str):
     document = documents.find_one({"_id": (ObjectId(document_id))})
@@ -124,6 +140,7 @@ async def get_associated_users(document_id: str):
     return {"associated_users": associated_users}
 
 
+# Define a POST endpoint to approve a document for a user
 @dms.post("/approve/{document_id}/{user_id}")
 async def approve_document(document_id: str, user_id: str):
     document = documents.find_one({"_id": ObjectId(document_id)})
@@ -136,6 +153,7 @@ async def approve_document(document_id: str, user_id: str):
 
     associated_users = document.get("associated_users", [])
 
+    # Update the approval status for the specified user in the document
     for i in range(len(associated_users)):
         if associated_users[i]["user_id"] == user_id:
             associated_users[i]["approval_status"] = True
@@ -145,6 +163,7 @@ async def approve_document(document_id: str, user_id: str):
     return {"detail": f"Approved document {document_id} for user {user_id}"}
 
 
+# Define a GET endpoint to retrieve all documents associated with a user
 @dms.get("/associated_documents/{user_id}")
 async def get_associated_documents(user_id: str):
     user = users.find_one({"_id": ObjectId(user_id)})
@@ -176,7 +195,7 @@ async def get_associated_documents(user_id: str):
     return {"associated_documents": associated_documents}
 
 
-
+# Define a DELETE endpoint to disassociate a document from a user
 @dms.delete("/disassociate/{document_id}/{user_id}")
 async def disassociate_document_from_user(document_id: str, user_id: str):
     document = documents.find_one({"_id": ObjectId(document_id)})
@@ -189,6 +208,7 @@ async def disassociate_document_from_user(document_id: str, user_id: str):
 
     associated_users = document.get("associated_users", [])
 
+    # Remove the specified user from the associated_users list
     for i in range(len(associated_users)):
         if associated_users[i]["user_id"] == user_id:
             del associated_users[i]

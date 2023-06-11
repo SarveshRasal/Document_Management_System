@@ -37,4 +37,4 @@ This project aims to develop a web-based integrated platform for managing files 
 
 ## License
 
-This project is licensed under GNU GPL Version 3 - see the [LICENSE.md](LICENSE.md) file for details.
+This project is licensed under GNU GPL Version 3 - see the [LICENSE](LICENSE) file for details.

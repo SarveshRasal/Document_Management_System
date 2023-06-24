@@ -1,13 +1,32 @@
+import os
 from datetime import datetime
 from bson import ObjectId
 from fastapi import FastAPI, HTTPException, status, UploadFile
+from fastapi.middleware.cors import CORSMiddleware  # Import CORS middleware
 from pathlib import Path
 from pymongo import MongoClient
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
+
+from starlette.responses import FileResponse
 
 # Create a FastAPI instance
 dms = FastAPI()
+
+# Configure CORS settings
+origins = [
+    "http://localhost",
+    "http://localhost:3000",
+    "127.0.0.1:3000",  # Update with your Flutter app URL
+]
+
+dms.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],  # Add other allowed methods as necessary
+    allow_headers=["*"],
+)
 
 # Initialize the MongoDB client
 client = MongoClient()
@@ -34,14 +53,36 @@ class InputUser(BaseModel):
     List_Of_User: List[BasicsOfAUser]
 
 
-# Define a GET endpoint at the root URL ("/") to list all database names (for testing purposes)
-@dms.get("/")
-def get_everything():
-    x = client.list_database_names()
-    print(x)
+# Define the Pydantic model for the login payload
+class LoginCredentials(BaseModel):
+    Email: str
+    Password: str
 
 
-#
+class ApproveOrReject(BaseModel):
+    document_id: str
+    user_id: str
+    approval_status: Optional[bool] = None
+
+
+class Association(BaseModel):
+    document_id: str
+    user_id: str
+    priority: int
+
+# Define a POST endpoint to log in a current user and return his/her associated documents
+@dms.post("/login/")
+async def user_login(credentials: LoginCredentials):
+    user = users.find_one({"Email": credentials.Email, "Password": credentials.Password})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    user_id = str(user["_id"])
+    associated_documents = await get_associated_documents(user_id)
+    return {"user_id": user_id, "Email": credentials.Email, "Password": credentials.Password,
+            "associated_documents": associated_documents}
+
+
 # Define a GET endpoint to retrieve all users from the "user_records" collection
 @dms.get("/users/")
 async def get_users():
@@ -95,30 +136,24 @@ async def delete_file(filename: str):
 
 # Define a POST endpoint to associate a document with a user
 @dms.post("/associate/{document_id}/{user_id}")
-async def associate_document_with_user(document_id: str, user_id: str):
-    document = documents.find_one({"_id": ObjectId(document_id)})
+async def associate_document_with_user(Association: Association):
+    document = documents.find_one({"_id": ObjectId(Association.document_id)})
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    user = users.find_one({"_id": ObjectId(user_id)})
+    user = users.find_one({"_id": ObjectId(Association.user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Get the current maximum priority number for this document
-    max_priority = 0
-    for associated_user in document.get("associated_users", []):
-        if associated_user["priority"] > max_priority:
-            max_priority = associated_user["priority"]
-
-    # Increment the priority number for the new association
-    priority = max_priority + 1
-
     # Update the document to add the new associated user
-    documents.update_one({"_id": ObjectId(document_id)},
+    documents.update_one({"_id": ObjectId(Association.document_id)},
                          {"$push": {
-                             "associated_users": {"user_id": user_id, "approval_status": False, "priority": priority}}})
+                             "associated_users":
+                                 {"user_id": Association.user_id,
+                                  "approval_status": None,
+                                  "priority": Association.priority}}})
 
-    return {"detail": f"Associated document {document_id} with user {user_id}"}
+    return {"detail": f"Associated document {Association.document_id} with user {Association.user_id}"}
 
 
 # Define a GET endpoint to retrieve all associated users of a document
@@ -135,19 +170,21 @@ async def get_associated_users(document_id: str):
         if user_record:
             # Convert ObjectId to string
             user_record["_id"] = str(user_record["_id"])
-            associated_users.append({"user": user_record, "approval_status": user["approval_status"]})
+            user_record["approval_status"] = user["approval_status"]
+            user_record["priority"] = user["priority"]
+            associated_users.append(user_record)
 
     return {"associated_users": associated_users}
 
 
 # Define a POST endpoint to approve a document for a user
-@dms.post("/approve/{document_id}/{user_id}")
-async def approve_document(document_id: str, user_id: str):
-    document = documents.find_one({"_id": ObjectId(document_id)})
+@dms.post("/status/{document_id}/{user_id}")
+async def status(paylaod: ApproveOrReject):
+    document = documents.find_one({"_id": ObjectId(paylaod.document_id)})
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    user = users.find_one({"_id": ObjectId(user_id)})
+    user = users.find_one({"_id": ObjectId(paylaod.user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -155,15 +192,26 @@ async def approve_document(document_id: str, user_id: str):
 
     # Update the approval status for the specified user in the document
     for i in range(len(associated_users)):
-        if associated_users[i]["user_id"] == user_id:
-            associated_users[i]["approval_status"] = True
+        if associated_users[i]["user_id"] == paylaod.user_id:
+            associated_users[i]["approval_status"] = paylaod.approval_status
+            break
 
-    documents.update_one({"_id": ObjectId(document_id)}, {"$set": {"associated_users": associated_users}})
+    documents.update_one({"_id": ObjectId(paylaod.document_id)}, {"$set": {"associated_users": associated_users}})
 
-    return {"detail": f"Approved document {document_id} for user {user_id}"}
+    # Notify the user who posted the document if the approval status is False
+    # if not approval_status:
+    #    notify_user(document_id)
+
+    if paylaod.approval_status is True:
+        return {"detail": f"Approved document {paylaod.document_id} for user {paylaod.user_id}"}
+    elif paylaod.approval_status is False:
+        return {"detail": f"Rejected document {paylaod.document_id} for user {paylaod.user_id}"}
+    else:
+        return {"detail": f"Reset approval status for document {paylaod.document_id} for user {paylaod.user_id}"}
 
 
 # Define a GET endpoint to retrieve all documents associated with a user
+# Define a GET endpoint to retrieve the documents associated with a user
 @dms.get("/associated_documents/{user_id}")
 async def get_associated_documents(user_id: str):
     user = users.find_one({"_id": ObjectId(user_id)})
@@ -172,27 +220,34 @@ async def get_associated_documents(user_id: str):
 
     associated_documents = []
 
-    for document in documents.find({"associated_users.user_id": user_id}):
-        # Find the current user's priority for this document
-        current_user_priority = None
-        for associated_user in document["associated_users"]:
-            if associated_user["user_id"] == user_id:
-                current_user_priority = associated_user["priority"]
-                break
+    # Find the documents associated with the user
+    cursor = documents.find({"associated_users.user_id": user_id})
+    for document in cursor:
+        approval_status_list = []
+        priority = None
 
-        # Check if all associated users with a lower priority have an approval_status of True
-        all_approved = True
-        for associated_user in document["associated_users"]:
-            if associated_user["priority"] < current_user_priority and not associated_user["approval_status"]:
-                all_approved = False
-                break
+        # Check the approval status and priority level for each associated user
+        for user in document["associated_users"]:
+            if user["user_id"] == user_id:
+                approval_status = user.get("approval_status")
+                priority = user.get("priority")
+            else:
+                if user.get("approval_status") is None:
+                    approval_status_list.append(False)
+                else:
+                    approval_status_list.append(user.get("approval_status"))
 
-        if all_approved:
-            # Convert ObjectId to string
-            document["_id"] = str(document["_id"])
-            associated_documents.append(document)
+        # Determine if the document should be included based on the priority and approval status
+        if priority == 1 or all(approval_status_list):
+            associated_documents.append({
+                "document_id": str(document["_id"]),
+                "file_path": document["file_path"],
+                "approval_status": approval_status,
+                "priority": priority
+            })
 
-    return {"associated_documents": associated_documents}
+    return {"user_id": user_id, "associated_documents": associated_documents}
+
 
 
 # Define a DELETE endpoint to disassociate a document from a user
@@ -217,3 +272,17 @@ async def disassociate_document_from_user(document_id: str, user_id: str):
     documents.update_one({"_id": ObjectId(document_id)}, {"$set": {"associated_users": associated_users}})
 
     return {"detail": f"Disassociated document {document_id} from user {user_id}"}
+
+
+# Define a GET endpoint to download a file by document ID
+@dms.get("/files/download/{document_id}")
+async def download_file(document_id: str):
+    document = documents.find_one({"_id": ObjectId(document_id)})
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        file_path = document["file_path"]
+        return FileResponse(file_path, media_type='application/pdf', filename=os.path.basename(file_path))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found")
